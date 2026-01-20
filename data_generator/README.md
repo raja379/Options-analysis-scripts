@@ -42,6 +42,21 @@ The `StockDataGenerator` class generates realistic simulated stock price data wi
 - **Events**: Earnings announcement flag
 - **Sentiment**: News sentiment score
 
+### 7. **Controllable Inputs (NEW!)** 🎯
+- **Target Prices**: Set specific price targets for dates (e.g., March 1 = $200, May 1 = $250)
+  - Model automatically adjusts drift to guide price toward targets
+  - Maintains realistic stochastic behavior while approaching targets
+- **News Events**: Schedule news with custom sentiment and volatility impact
+  - Sentiment ranges from -1 (very negative) to +1 (very positive)
+  - Configurable volatility spikes for each event
+  - Automatic volume increases on news days
+- **Volatility Schedule**: Set different volatility regimes over time
+  - Specify annualized volatility for different periods
+  - Smooth transitions between volatility levels
+- **Regime Schedule**: Control market regimes (bull/bear/neutral) at specific dates
+  - Override stochastic transitions with deterministic regime changes
+  - Combine with other controllable inputs for complex scenarios
+
 ## Usage
 
 ### Basic Example
@@ -99,6 +114,76 @@ tech_stock.earnings_frequency = 90  # Quarterly
 data = tech_stock.generate(n_days=252 * 2)
 ```
 
+### Controllable Inputs - Target Prices & Events
+
+Control specific aspects of the simulation with scheduled targets and events:
+
+```python
+from datetime import datetime
+
+# Create generator
+generator = StockDataGenerator(
+    ticker="CONTROLLED",
+    initial_price=100.0,
+    seed=42
+)
+
+# Set target prices - model will guide price toward these targets
+generator.add_price_target(datetime(2025, 3, 1), 120.0)   # March target
+generator.add_price_target(datetime(2025, 6, 1), 140.0)   # June target
+generator.add_price_target(datetime(2025, 9, 1), 155.0)   # September target
+generator.add_price_target(datetime(2025, 12, 1), 180.0)  # December target
+
+# Schedule news events with sentiment and volatility impact
+generator.add_news_event(
+    date=datetime(2025, 1, 15),
+    sentiment=-0.6,  # Negative news
+    description="Regulatory concerns",
+    volatility_spike=1.8  # 1.8x volatility multiplier
+)
+
+generator.add_news_event(
+    date=datetime(2025, 2, 10),
+    sentiment=0.8,  # Positive news
+    description="Strong product launch",
+    volatility_spike=1.5
+)
+
+# Set volatility schedule
+volatility_schedule = [
+    (datetime(2025, 1, 1), 0.25),   # Start with 25% vol
+    (datetime(2025, 6, 1), 0.15),   # Drop to 15% vol
+    (datetime(2025, 9, 1), 0.30),   # Spike to 30% vol
+]
+generator.set_volatility_schedule(volatility_schedule)
+
+# Set market regime schedule
+regime_schedule = [
+    (datetime(2025, 1, 1), 'neutral'),
+    (datetime(2025, 3, 20), 'bull'),
+    (datetime(2025, 7, 15), 'bear'),
+    (datetime(2025, 9, 10), 'neutral'),
+]
+generator.set_regime_schedule(regime_schedule)
+
+# Generate data with all controllable inputs
+data = generator.generate(n_days=252, start_date=datetime(2025, 1, 1))
+
+# Results will show:
+# - Price trending toward targets (while maintaining realism)
+# - Sharp moves and high volume on news event days
+# - Volatility changes at scheduled dates
+# - Regime-specific behavior at scheduled dates
+```
+
+**Key Features:**
+- **Target Guidance**: Price is guided toward targets using drift adjustment
+- **News Impact**: Sentiment affects price direction, volatility spikes on news days
+- **Realistic Behavior**: Maintains stochastic properties despite guidance
+- **Volume Response**: Trading volume increases on news/event days
+
+See `example_controllable_inputs.py` for a complete demonstration.
+
 ## Output Format
 
 The generated DataFrame includes the following columns:
@@ -154,18 +239,37 @@ After creating the generator, you can adjust:
 - `earnings_vol_spike`: Volatility multiplier on earnings days (default: 2.5)
 - `regimes`: Dictionary of market regime parameters
 
+### Controllable Input Methods
+
+- `add_price_target(date, target_price)`: Add a target price for a specific date
+- `add_news_event(date, sentiment, description, volatility_spike)`: Schedule a news event
+- `set_volatility_schedule(schedule)`: Set a list of (date, volatility) tuples
+- `set_regime_schedule(schedule)`: Set a list of (date, regime_name) tuples
+- `clear_schedules()`: Clear all scheduled events and targets
+
 ## Examples
 
+### Basic Example
 See `example_usage.py` for complete examples including:
-- Growth stock simulation
-- Value stock simulation
-- Volatile tech stock simulation
-
-Run the examples:
+- Growth stock simulation (high P/E, high growth)
+- Value stock simulation (low P/E, moderate growth)
+- Volatile tech stock simulation (high beta, high volatility)
 
 ```bash
 cd data_generator
 python3 example_usage.py
+```
+
+### Controllable Inputs Example
+See `example_controllable_inputs.py` for advanced scenarios with:
+- Target price scheduling (March=$120, June=$140, etc.)
+- News events with custom sentiment and volatility impact
+- Volatility regime changes throughout the year
+- Market regime scheduling (bull/bear/neutral transitions)
+
+```bash
+cd data_generator
+python3 example_controllable_inputs.py
 ```
 
 ## Technical Details

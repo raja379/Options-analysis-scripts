@@ -80,6 +80,144 @@ class StockDataGenerator:
         self.earnings_frequency = 90  # Days between earnings
         self.earnings_vol_spike = 2.5  # Volatility multiplier on earnings days
 
+        # Controllable schedules
+        self.price_targets = []  # List of (date, target_price) tuples
+        self.news_events = []  # List of (date, sentiment, description) tuples
+        self.volatility_schedule = []  # List of (date, volatility) tuples
+        self.regime_schedule = []  # List of (date, regime_name) tuples
+
+    def add_price_target(self, date: datetime, target_price: float) -> None:
+        """
+        Add a target price for a specific date.
+
+        The model will adjust drift to guide the price toward this target.
+
+        Args:
+            date: Target date
+            target_price: Desired price on that date
+        """
+        self.price_targets.append((date, target_price))
+        self.price_targets.sort(key=lambda x: x[0])
+
+    def add_news_event(
+        self,
+        date: datetime,
+        sentiment: float,
+        description: str = "",
+        volatility_spike: float = 1.5
+    ) -> None:
+        """
+        Add a news event at a specific date.
+
+        Args:
+            date: Date of the news event
+            sentiment: Sentiment score (-1 to 1, where -1 is very negative, 1 is very positive)
+            description: Description of the event
+            volatility_spike: Volatility multiplier for this event (default: 1.5x)
+        """
+        sentiment = np.clip(sentiment, -1, 1)
+        self.news_events.append((date, sentiment, description, volatility_spike))
+        self.news_events.sort(key=lambda x: x[0])
+
+    def set_volatility_schedule(self, schedule: list) -> None:
+        """
+        Set a schedule of volatility changes.
+
+        Args:
+            schedule: List of (date, volatility) tuples where volatility is annualized
+        """
+        self.volatility_schedule = sorted(schedule, key=lambda x: x[0])
+
+    def set_regime_schedule(self, schedule: list) -> None:
+        """
+        Set a schedule of market regime changes.
+
+        Args:
+            schedule: List of (date, regime_name) tuples where regime_name is 'bull', 'neutral', or 'bear'
+        """
+        for date, regime in schedule:
+            if regime not in self.regimes:
+                raise ValueError(f"Invalid regime: {regime}. Must be one of {list(self.regimes.keys())}")
+        self.regime_schedule = sorted(schedule, key=lambda x: x[0])
+
+    def clear_schedules(self) -> None:
+        """Clear all scheduled events and targets."""
+        self.price_targets = []
+        self.news_events = []
+        self.volatility_schedule = []
+        self.regime_schedule = []
+
+    def _get_scheduled_regime(self, current_date: datetime) -> Optional[str]:
+        """Get the scheduled regime for the current date, if any."""
+        for date, regime in self.regime_schedule:
+            if date.date() == current_date.date():
+                return regime
+        return None
+
+    def _get_scheduled_volatility(self, current_date: datetime) -> Optional[float]:
+        """Get the scheduled volatility for the current date, if any."""
+        # Find the most recent volatility schedule up to current date
+        scheduled_vol = None
+        for date, vol in self.volatility_schedule:
+            if date <= current_date:
+                scheduled_vol = vol
+            else:
+                break
+        return scheduled_vol
+
+    def _get_news_event(self, current_date: datetime) -> Optional[Tuple[float, str, float]]:
+        """Get news event for current date if any. Returns (sentiment, description, vol_spike)."""
+        for date, sentiment, description, vol_spike in self.news_events:
+            if date.date() == current_date.date():
+                return (sentiment, description, vol_spike)
+        return None
+
+    def _calculate_target_guided_drift(
+        self,
+        current_date: datetime,
+        current_price: float,
+        days_remaining_in_simulation: int,
+        base_drift: float
+    ) -> float:
+        """
+        Calculate drift adjustment to guide price toward targets.
+
+        Uses a weighted approach: nearer targets have more influence.
+        """
+        if not self.price_targets:
+            return base_drift
+
+        # Find the next target after current date
+        next_target = None
+        for target_date, target_price in self.price_targets:
+            if target_date > current_date:
+                next_target = (target_date, target_price)
+                break
+
+        if next_target is None:
+            return base_drift
+
+        target_date, target_price = next_target
+        days_to_target = (target_date - current_date).days
+
+        if days_to_target <= 0:
+            return base_drift
+
+        # Calculate required annual return to reach target
+        required_return = (target_price / current_price) ** (252 / days_to_target) - 1
+
+        # Blend with base drift (more weight to target as we get closer)
+        # Weight factor: higher when closer to target
+        weight = min(1.0, 100.0 / days_to_target)  # Max weight at ~100 days or less
+
+        # Gradually shift drift toward required return
+        guided_drift = (1 - weight) * base_drift + weight * required_return
+
+        # Bound the drift to prevent extreme adjustments
+        guided_drift = np.clip(guided_drift, base_drift - 0.3, base_drift + 0.3)
+
+        return guided_drift
+
     def _get_regime_transition(self) -> str:
         """Determine if regime should transition based on probabilities."""
         transition_prob = self.regimes[self.current_regime]['transition_prob']
@@ -376,9 +514,28 @@ class StockDataGenerator:
             # Check if it's an earnings day
             is_earnings_day = (day_count % self.earnings_frequency == 0) and day_count > 0
 
-            # Update market regime
-            self.current_regime = self._get_regime_transition()
+            # Check for scheduled regime
+            scheduled_regime = self._get_scheduled_regime(current_date)
+            if scheduled_regime:
+                self.current_regime = scheduled_regime
+            else:
+                # Update market regime through stochastic transitions
+                self.current_regime = self._get_regime_transition()
+
             regime_params = self.regimes[self.current_regime]
+
+            # Check for scheduled volatility
+            scheduled_vol = self._get_scheduled_volatility(current_date)
+            if scheduled_vol:
+                base_vol_to_use = scheduled_vol
+            else:
+                base_vol_to_use = self.base_volatility
+
+            # Check for news events
+            news_event = self._get_news_event(current_date)
+            has_news = news_event is not None
+            news_sentiment_override = news_event[0] if has_news else None
+            news_vol_spike = news_event[2] if has_news else 1.0
 
             # Calculate P/E ratio
             current_pe = current_price / current_eps if current_eps > 0 else 20
@@ -387,18 +544,29 @@ class StockDataGenerator:
             annual_drift = self._calculate_valuation_drift(
                 current_pe, current_growth, regime_params['drift']
             )
+
+            # Apply target-guided drift adjustment
+            days_remaining = n_days - day_count
+            annual_drift = self._calculate_target_guided_drift(
+                current_date, current_price, days_remaining, annual_drift
+            )
+
             daily_drift = annual_drift / 252
 
             # Update volatility with clustering
             recent_return = 0 if len(closes) < 2 else (closes[-1] - closes[-2]) / closes[-2]
 
             # Adjust base volatility for current regime
-            regime_adjusted_base_vol = self.base_volatility * regime_params['vol_multiplier']
+            regime_adjusted_base_vol = base_vol_to_use * regime_params['vol_multiplier']
 
             # Update volatility with regime-adjusted base
             current_vol = self._update_volatility_with_regime(
                 current_vol, recent_return, is_earnings_day, regime_adjusted_base_vol
             )
+
+            # Apply news event volatility spike
+            if has_news:
+                current_vol *= news_vol_spike
 
             # Generate correlated return
             shock = self._generate_correlated_shock(benchmark_returns[day_count], current_vol)
@@ -414,7 +582,7 @@ class StockDataGenerator:
 
             # Calculate volume
             price_change = (close_price - open_price) / open_price
-            volume = self._calculate_volume(base_volume, price_change, current_vol, is_earnings_day)
+            volume = self._calculate_volume(base_volume, price_change, current_vol, is_earnings_day or has_news)
 
             # Update fundamentals
             current_eps, current_growth = self._update_fundamentals(
@@ -440,8 +608,11 @@ class StockDataGenerator:
             # Annualized volatility for output
             annual_vol = current_vol * np.sqrt(252)
 
-            # News sentiment
-            sentiment = self._calculate_news_sentiment(price_change, is_earnings_day)
+            # News sentiment (use scheduled news sentiment if available)
+            if news_sentiment_override is not None:
+                sentiment = news_sentiment_override
+            else:
+                sentiment = self._calculate_news_sentiment(price_change, is_earnings_day)
 
             # Store values
             dates.append(current_date)
