@@ -1,2 +1,11 @@
 # Python dependencies for Options analysis scripts
 # Add your required packages here
+
+# Core data analysis libraries
+numpy>=1.24.0
+pandas>=2.0.0
+
+# For future options analysis
+# scipy>=1.10.0
+# matplotlib>=3.7.0
+# yfinance>=0.2.0
